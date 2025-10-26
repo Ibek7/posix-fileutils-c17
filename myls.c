@@ -11,6 +11,26 @@
 #include <time.h>
 #include <limits.h>
 
+typedef struct {
+    char name[256];
+    struct stat st;
+    char path[4096];
+} FileEntry;
+
+static int sort_by_name(const void *a, const void *b) {
+    return strcmp(((FileEntry*)a)->name, ((FileEntry*)b)->name);
+}
+
+static int sort_by_size(const void *a, const void *b) {
+    off_t diff = ((FileEntry*)a)->st.st_size - ((FileEntry*)b)->st.st_size;
+    return (diff > 0) - (diff < 0);
+}
+
+static int sort_by_time(const void *a, const void *b) {
+    time_t diff = ((FileEntry*)a)->st.st_mtime - ((FileEntry*)b)->st.st_mtime;
+    return (diff > 0) - (diff < 0);
+}
+
 static void print_mode(mode_t mode) {
     char str[11];
     str[0] = S_ISDIR(mode) ? 'd' : S_ISLNK(mode) ? 'l' : S_ISCHR(mode) ? 'c' : S_ISBLK(mode) ? 'b' : S_ISFIFO(mode) ? 'p' : S_ISSOCK(mode) ? 's' : '-';
@@ -27,57 +47,76 @@ static void print_mode(mode_t mode) {
     printf("%s", str);
 }
 
-static void print_entry_long(const char *dirpath, const char *name) {
-    char path[4096];
-    snprintf(path, sizeof(path), "%s/%s", dirpath, name);
-    struct stat st;
-    if (lstat(path, &st) == -1) {
-        printf("%s\n", name);
-        return;
-    }
-    print_mode(st.st_mode);
-    printf(" %lu", (unsigned long)st.st_nlink);
-    struct passwd *pw = getpwuid(st.st_uid);
-    struct group  *gr = getgrgid(st.st_gid);
+static void print_entry_long(FileEntry *ent) {
+    print_mode(ent->st.st_mode);
+    printf(" %lu", (unsigned long)ent->st.st_nlink);
+    struct passwd *pw = getpwuid(ent->st.st_uid);
+    struct group  *gr = getgrgid(ent->st.st_gid);
     printf(" %s %s", pw ? pw->pw_name : "?", gr ? gr->gr_name : "?");
-    printf(" %8lld", (long long)st.st_size);
+    printf(" %8lld", (long long)ent->st.st_size);
     char tbuf[64];
     struct tm lt;
-    localtime_r(&st.st_mtime, &lt);
+    localtime_r(&ent->st.st_mtime, &lt);
     strftime(tbuf, sizeof(tbuf), " %b %d %H:%M", &lt);
 
-    /* If this is a symlink, read and display the target */
-    if (S_ISLNK(st.st_mode)) {
+    if (S_ISLNK(ent->st.st_mode)) {
         char target[PATH_MAX + 1];
-        ssize_t len = readlink(path, target, PATH_MAX);
+        ssize_t len = readlink(ent->path, target, PATH_MAX);
         if (len >= 0) {
             if (len > PATH_MAX) len = PATH_MAX;
             target[len] = '\0';
-            printf("%s %s -> %s\n", tbuf, name, target);
+            printf("%s %s -> %s\n", tbuf, ent->name, target);
             return;
         }
     }
 
-    printf("%s %s\n", tbuf, name);
+    printf("%s %s\n", tbuf, ent->name);
 }
 
 int main(int argc, char **argv) {
-    int longflag = 0;
+    int longflag = 0, sortflag = 0;
     const char *dir = ".";
+    int (*sortfn)(const void*, const void*) = sort_by_name;
     int ai = 1;
-    if (argc > 1 && strcmp(argv[1], "-l") == 0) { longflag = 1; ai = 2; }
+
+    while (ai < argc && argv[ai][0] == '-') {
+        if (strcmp(argv[ai], "-l") == 0) longflag = 1;
+        else if (strcmp(argv[ai], "-S") == 0) { sortflag = 1; sortfn = sort_by_size; }
+        else if (strcmp(argv[ai], "-t") == 0) { sortflag = 1; sortfn = sort_by_time; }
+        ai++;
+    }
     if (ai < argc) dir = argv[ai];
 
     DIR *d = opendir(dir);
     if (!d) { fprintf(stderr, "opendir %s: %s\n", dir, strerror(errno)); return 2; }
+
+    FileEntry *entries = NULL;
+    int count = 0, capacity = 10;
+    entries = malloc(capacity * sizeof(FileEntry));
+
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
-        if (!longflag) {
-            printf("%s\n", ent->d_name);
-        } else {
-            print_entry_long(dir, ent->d_name);
+        if (count >= capacity) {
+            capacity *= 2;
+            entries = realloc(entries, capacity * sizeof(FileEntry));
         }
+        strncpy(entries[count].name, ent->d_name, 255);
+        snprintf(entries[count].path, 4096, "%s/%s", dir, ent->d_name);
+        lstat(entries[count].path, &entries[count].st);
+        count++;
     }
     closedir(d);
+
+    if (sortflag) qsort(entries, count, sizeof(FileEntry), sortfn);
+
+    for (int i = 0; i < count; i++) {
+        if (!longflag) {
+            printf("%s\n", entries[i].name);
+        } else {
+            print_entry_long(&entries[i]);
+        }
+    }
+
+    free(entries);
     return 0;
 }

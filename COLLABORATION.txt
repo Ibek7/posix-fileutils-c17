@@ -1,0 +1,3 @@
+Collaboration statement:
+
+All code in this directory was written by the student as part of the homework assignment. No external collaborators or unauthorized resources were used beyond standard man pages and course materials.
